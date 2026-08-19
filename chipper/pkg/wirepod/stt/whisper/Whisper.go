@@ -90,8 +90,8 @@ func makeOpenAIReq(in []byte) (string, error) {
 
 	buf := new(bytes.Buffer)
 	w := multipart.NewWriter(buf)
-	w.WriteField("model", "whisper-1")
-	sendFile, _ := w.CreateFormFile("file", "audio.mp3")
+	w.WriteField("model", "gpt-transcribe")
+	sendFile, _ := w.CreateFormFile("file", "audio.wav")
 	sendFile.Write(in)
 	w.Close()
 
