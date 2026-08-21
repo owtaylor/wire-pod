@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -20,7 +21,15 @@ import (
 var Name string = "whisper"
 
 type openAiResp struct {
-	Text string `json:"text"`
+	Text  string       `json:"text"`
+	Error *openAiError `json:"error,omitempty"`
+}
+
+type openAiError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Param   string `json:"param"`
+	Code    string `json:"code"`
 }
 
 func Init() error {
@@ -76,7 +85,7 @@ func newAudioIntBuffer(r io.Reader) (*audio.IntBuffer, error) {
 	}
 }
 
-func makeOpenAIReq(in []byte) string {
+func makeOpenAIReq(in []byte) (string, error) {
 	url := "https://api.openai.com/v1/audio/transcriptions"
 
 	buf := new(bytes.Buffer)
@@ -93,18 +102,39 @@ func makeOpenAIReq(in []byte) string {
 	client := &http.Client{}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		logger.Println(err)
-		return "There was an error."
+		return "", fmt.Errorf("error sending request to OpenAI: %w", err)
 	}
 
 	defer resp.Body.Close()
 
-	response, _ := io.ReadAll(resp.Body)
+	response, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("error reading response from OpenAI: %w", err)
+	}
 
+	// Example error response:
+	//	{
+	//  "error": {
+	//    "message": "Audio file might be corrupted or unsupported",
+	//    "type": "invalid_request_error",
+	//    "param": "file",
+	//    "code": "invalid_value"
+	//  }
+	//}
 	var aiResponse openAiResp
-	json.Unmarshal(response, &aiResponse)
+	if err := json.Unmarshal(response, &aiResponse); err != nil {
+		return "", fmt.Errorf("error parsing response from OpenAI (status %s): %s", resp.Status, string(response))
+	}
 
-	return aiResponse.Text
+	if aiResponse.Error != nil {
+		return "", fmt.Errorf("OpenAI returned an error (status %s): %s", resp.Status, aiResponse.Error.Message)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("OpenAI returned a non-OK status (%s): %s", resp.Status, string(response))
+	}
+
+	return aiResponse.Text, nil
 }
 
 func STT(req sr.SpeechRequest) (string, error) {
@@ -130,7 +160,12 @@ func STT(req sr.SpeechRequest) (string, error) {
 	pcmBufTo.Write(req.DecodedMicData)
 	pcmBuf := pcm2wav(pcmBufTo.BytesReader())
 
-	transcribedText := strings.ToLower(makeOpenAIReq(pcmBuf))
+	transcribedText, err := makeOpenAIReq(pcmBuf)
+	if err != nil {
+		logger.Println("Bot " + req.Device + " Whisper error: " + err.Error())
+		return "", err
+	}
+	transcribedText = strings.ToLower(transcribedText)
 	logger.Println("Bot " + req.Device + " Transcribed text: " + transcribedText)
 	return transcribedText, nil
 }
